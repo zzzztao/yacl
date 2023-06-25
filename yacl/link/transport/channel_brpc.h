@@ -26,10 +26,11 @@
 
 #include "yacl/link/ssl_options.h"
 #include "yacl/link/transport/channel.h"
+#include "yacl/link/transport/channel_brpc_base.h"
 
 namespace yacl::link {
 
-class ReceiverLoopBrpc final : public ReceiverLoopBase {
+class ReceiverLoopBrpc final : public ReceiverLoopBase<ChannelBrpcBase> {
  public:
   ~ReceiverLoopBrpc() override;
 
@@ -54,70 +55,31 @@ class ReceiverLoopBrpc final : public ReceiverLoopBase {
   void StopImpl();
 };
 
-class ChannelBrpc final : public ChannelBase,
-                          public std::enable_shared_from_this<ChannelBrpc> {
+class ChannelBrpc final : public ChannelBrpcBase {
  public:
-  struct Options {
-    uint32_t http_timeout_ms = 10 * 1000;         // 10 seconds
-    uint32_t http_max_payload_size = 512 * 1024;  // 512k bytes
-    std::string channel_protocol = "baidu_std";
-    std::string channel_connection_type = "single";
-  };
+  static ChannelBrpcBase::Options GetDefaultOptions() {
+    return ChannelBrpcBase::Options{10 * 1000, 512 * 1024, "baidu_std",
+                                    "single"};
+  }
 
  private:
   // from IChannel
-  void SendAsyncImpl(const std::string& key, ByteContainerView value) override;
-  void SendAsyncImpl(const std::string& key, Buffer&& value) override;
-
-  void SendImpl(const std::string& key, ByteContainerView value) override;
-  void SendImpl(const std::string& key, ByteContainerView value,
-                uint32_t timeout) override;
+  void PushRequest(org::interconnection::link::PushRequest& request,
+                   uint32_t timeout) override;
+  void AsyncSendChunked(org::interconnection::link::PushRequest& request,
+                        SendChunkedWindow& window,
+                        std::string chunk_info) override;
 
  public:
-  ChannelBrpc(size_t self_rank, size_t peer_rank, Options options)
-      : ChannelBase(self_rank, peer_rank), options_(std::move(options)) {}
-
-  ChannelBrpc(size_t self_rank, size_t peer_rank, size_t recv_timeout_ms,
-              Options options)
-      : ChannelBase(self_rank, peer_rank, recv_timeout_ms),
-        options_(std::move(options)) {}
+  using ChannelBrpcBase::ChannelBrpcBase;
 
   void SetPeerHost(const std::string& peer_host,
                    const SSLOptions* ssl_opts = nullptr);
 
-  void AddAsyncCount();
-
-  void SubAsyncCount();
-
-  void WaitAsyncSendToFinish() override;
-
-  // max payload size for a single http request, in bytes.
-  uint32_t GetHttpMaxPayloadSize() const {
-    return options_.http_max_payload_size;
-  }
-
-  void SetHttpMaxPayloadSize(uint32_t max_payload_size) {
-    options_.http_max_payload_size = max_payload_size;
-  }
-
-  // send chunked, synchronized.
-  void SendChunked(const std::string& key, ByteContainerView value);
-
- private:
-  template <class ValueType>
-  void SendAsyncInternal(const std::string& key, ValueType&& value);
-
  protected:
-  Options options_;
-
   // brpc channel related.
   std::string peer_host_;
   std::shared_ptr<brpc::Channel> channel_;
-
-  // WaitAsyncSendToFinish
-  bthread::ConditionVariable wait_async_cv_;
-  bthread::Mutex wait_async_mutex_;
-  int64_t running_async_count_ = 0;
 };
 
 }  // namespace yacl::link

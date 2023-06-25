@@ -57,9 +57,9 @@ class ChannelBrpcTest : public ::testing::Test {
     std::srand(std::time(nullptr));
     const size_t send_rank = 0;
     const size_t recv_rank = 1;
-
-    sender_ = std::make_shared<ChannelBrpc>(send_rank, recv_rank, options_);
-    receiver_ = std::make_shared<ChannelBrpc>(recv_rank, send_rank, options_);
+    auto options = ChannelBrpc::GetDefaultOptions();
+    sender_ = std::make_shared<ChannelBrpc>(send_rank, recv_rank, options);
+    receiver_ = std::make_shared<ChannelBrpc>(recv_rank, send_rank, options);
 
     // let sender rank as 0, receiver rank as 1.
     // receiver_ listen messages from sender(rank 0).
@@ -88,7 +88,6 @@ class ChannelBrpcTest : public ::testing::Test {
     f_r.get();
   }
 
-  ChannelBrpc::Options options_;
   std::shared_ptr<ChannelBrpc> sender_;
   std::shared_ptr<ChannelBrpc> receiver_;
   std::string receiver_host_;
@@ -140,31 +139,6 @@ TEST_P(ChannelBrpcWithLimitTest, SendAsync) {
   EXPECT_EQ(sent, std::string_view(received));
 }
 
-TEST_P(ChannelBrpcWithLimitTest, Wait) {
-  const size_t size_limit_per_call = std::get<0>(GetParam());
-  const size_t size_to_send = std::get<1>(GetParam());
-
-  sender_->SetHttpMaxPayloadSize(size_limit_per_call);
-
-  const size_t test_size = 128 + (std::rand() % 128);
-
-  std::vector<std::string> sended_data(test_size);
-
-  for (size_t i = 0; i < test_size; i++) {
-    const std::string key = fmt::format("Key_{}", i);
-    sended_data[i] = RandStr(size_to_send);
-    sender_->SendAsync(key, ByteContainerView{sended_data[i]});
-  }
-
-  sender_->WaitAsyncSendToFinish();
-
-  for (size_t i = 0; i < test_size; i++) {
-    const std::string key = fmt::format("Key_{}", i);
-    auto received = receiver_->Recv(key);
-    EXPECT_EQ(sended_data[i], std::string_view(received));
-  }
-}
-
 TEST_P(ChannelBrpcWithLimitTest, Unread) {
   const size_t size_limit_per_call = std::get<0>(GetParam());
   const size_t size_to_send = std::get<1>(GetParam());
@@ -182,7 +156,7 @@ TEST_P(ChannelBrpcWithLimitTest, Unread) {
   }
 }
 
-TEST_P(ChannelBrpcWithLimitTest, ThrottleWindow) {
+TEST_P(ChannelBrpcWithLimitTest, Async) {
   const size_t size_limit_per_call = std::get<0>(GetParam());
   const size_t size_to_send = std::get<1>(GetParam());
   sender_->SetThrottleWindowSize(size_to_send);
@@ -207,6 +181,43 @@ TEST_P(ChannelBrpcWithLimitTest, ThrottleWindow) {
     const std::string key = fmt::format("Key_{}", i);
     sended_data[i] = RandStr(size_to_send);
     sender_->SendAsync(key, ByteContainerView{sended_data[i]});
+  }
+  auto end = std::chrono::steady_clock::now();
+
+  double span =
+      std::chrono::duration_cast<std::chrono::microseconds>(end - start)
+          .count();
+
+  EXPECT_LT(span, 100 * 1000);
+
+  f_r.get();
+}
+
+TEST_P(ChannelBrpcWithLimitTest, AsyncWithThrottleLimit) {
+  const size_t size_limit_per_call = std::get<0>(GetParam());
+  const size_t size_to_send = std::get<1>(GetParam());
+  sender_->SetThrottleWindowSize(size_to_send);
+  sender_->SetHttpMaxPayloadSize(size_limit_per_call);
+  const size_t test_size = 128 + (std::rand() % 128);
+  std::vector<std::string> sended_data(test_size);
+
+  auto read = [&] {
+    for (size_t i = 0; i < test_size; i++) {
+      const std::string key = fmt::format("Key_{}", i);
+      if (i == 0) {
+        usleep(100 * 1000);
+      }
+      auto received = receiver_->Recv(key);
+      EXPECT_EQ(sended_data[i], std::string_view(received));
+    }
+  };
+  auto f_r = std::async(read);
+
+  auto start = std::chrono::steady_clock::now();
+  for (size_t i = 0; i < test_size; i++) {
+    const std::string key = fmt::format("Key_{}", i);
+    sended_data[i] = RandStr(size_to_send);
+    sender_->SendAsyncThrottled(key, ByteContainerView{sended_data[i]});
   }
   auto end = std::chrono::steady_clock::now();
 
@@ -247,7 +258,7 @@ TEST_P(ChannelBrpcWithLimitTest, ThrottleWindowUnread) {
   for (size_t i = 0; i < test_size; i++) {
     const std::string key = fmt::format("Key_{}", i);
     sended_data[i] = RandStr(size_to_send);
-    sender_->SendAsync(key, ByteContainerView{sended_data[i]});
+    sender_->SendAsyncThrottled(key, ByteContainerView{sended_data[i]});
   }
   auto end = std::chrono::steady_clock::now();
 
@@ -349,7 +360,7 @@ class ChannelBrpcSSLTest : public ::testing::Test {
   }
 
  protected:
-  ChannelBrpc::Options channel_options_;
+  ChannelBrpc::Options channel_options_ = ChannelBrpc::GetDefaultOptions();
 };
 
 TEST_F(ChannelBrpcSSLTest, OneWaySSL) {
@@ -357,7 +368,6 @@ TEST_F(ChannelBrpcSSLTest, OneWaySSL) {
   const size_t send_rank = 0;
   const size_t recv_rank = 1;
 
-  ChannelBrpc::Options channel_options;
   auto sender =
       std::make_shared<ChannelBrpc>(send_rank, recv_rank, channel_options_);
   auto receiver =
@@ -464,15 +474,13 @@ class DelayReceiverServiceImpl : public ic_pb::ReceiverService {
             const ic_pb::PushRequest* request, ic_pb::PushResponse* response,
             ::google::protobuf::Closure* done) override {
     brpc::ClosureGuard done_guard(done);
-
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-
     response->mutable_header()->set_error_code(ic::ErrorCode::OK);
     response->mutable_header()->set_error_msg("");
   }
 };
 
-class DummyReceiverLoopBrpc final : public ReceiverLoopBase {
+class DummyReceiverLoopBrpc final : public ReceiverLoopBase<ChannelBrpcBase> {
  public:
   ~DummyReceiverLoopBrpc() override { Stop(); }
 
