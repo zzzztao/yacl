@@ -42,7 +42,7 @@ const auto* const kTraceIdKey = "config.trace_id";
 const auto* const kTokenKey = "config.token";
 const auto* const kSessionIdKey = "config.session_id";
 // const auto *const kPartyIdKeyPrefix = "config.party_id";
-const auto *const kInstIdKeyPrefix = "config.inst_id";
+//const auto *const kInstIdKeyPrefix = "config.inst_id";
 
 const auto* const kHttpHeadProviderCode = "x-ptp-tecn-provider-code";
 const auto* const kHttpHeadTraceId = "x-ptp-trace-id";
@@ -282,16 +282,16 @@ void ChannelBrpcBlackBox::SetPeerHost(const std::string& self_id,
   auto* session_id = std::getenv(kSessionIdKey);
   YACL_ENFORCE(session_id != nullptr, "environment variable {} is not found",
                kSessionIdKey);
-  auto* ins_id = std::getenv(kInstIdKeyPrefix);
-  YACL_ENFORCE(ins_id != nullptr, "environment variable {} is not found",
-               kInstIdKeyPrefix);
+//  auto* ins_id = std::getenv(kInstIdKeyPrefix);
+//  YACL_ENFORCE(ins_id != nullptr, "environment variable {} is not found",
+//               kInstIdKeyPrefix);
 
   channel_ = std::move(brpc_channel);
   send_topic_ = self_id + peer_id;
   recv_topic_ = peer_id + self_id;
   peer_host_ = peer_id;
 
-  http_headers_[kHttpHeadInstId] = ins_id;
+  http_headers_[kHttpHeadInstId] = peer_node_id;
   http_headers_[kHttpHeadProviderCode] = "InsightOne";
   http_headers_[kHttpHeadTraceId] = trace_id;
   http_headers_[kHttpHeadToken] = token;
