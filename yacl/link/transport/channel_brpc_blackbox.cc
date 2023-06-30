@@ -42,7 +42,7 @@ const auto* const kTraceIdKey = "config.trace_id";
 const auto* const kTokenKey = "config.token";
 const auto* const kSessionIdKey = "config.session_id";
 // const auto *const kPartyIdKeyPrefix = "config.party_id";
-// const auto *const kInstIdKeyPrefix = "config.inst_id";
+const auto *const kInstIdKeyPrefix = "config.inst_id";
 
 const auto* const kHttpHeadProviderCode = "x-ptp-tecn-provider-code";
 const auto* const kHttpHeadTraceId = "x-ptp-trace-id";
@@ -50,7 +50,7 @@ const auto* const kHttpHeadToken = "x-ptp-token";
 const auto* const kHttpHeadTargetNodeId = "x-ptp-target-node-id";
 const auto* const kHttpHeadSourceNodeId = "x-ptp-source-node-id";
 
-// const auto *const kHttpHeadInstId = "x-ptp-target-inst-id";
+const auto *const kHttpHeadInstId = "x-ptp-target-inst-id";
 const auto* const kHttpHeadSessionId = "x-ptp-session-id";
 const auto* const kHttpHeadTopic = "x-ptp-topic";
 const auto* const kHttpHeadHost = "host";
@@ -82,12 +82,13 @@ class BlackBoxPushDone : public google::protobuf::Closure {
             std::move(*(cntl_.release_http_request()));
         new_done->cntl_.request_attachment() = cntl_.request_attachment();
         new_done->channel_.DealPushDone(std::move(new_done));
-      } else if (response_.code() != bb_ic::error_code::Code("OK")) {
+      } /*else if (response_.message() != bb_ic::error_code::Code("OK")) {
         SPDLOG_ERROR("send, peer failed, code={} message={}", response_.code(),
                      response_.message());
         exit(1);
-      } else {
+      } */else {
         window_.OnPushDone();
+        //        std::cout << "run function over!!!!!!!!!!" << std::endl;
       }
     }
   }
@@ -107,6 +108,7 @@ void ReceiverLoopBlackBox::Stop() {
   for (auto& [_, channel] : listeners_) {
     channel->StopReceive();
   }
+
 }
 
 void* ReceiverLoopBlackBox::ChannelProc(void* param) {
@@ -136,17 +138,56 @@ bool ChannelBrpcBlackBox::CanReceive() { return is_recv_.load(); }
 void ChannelBrpcBlackBox::StopReceive() {
   is_recv_.store(false);
   std::this_thread::sleep_for(std::chrono::seconds(pop_timeout_s_));
+  blackbox_interconnect::TransportOutbound response;
+  brpc::Controller cntl;
+  SetHttpHeader(&cntl, recv_topic_);
+  cntl.http_request().uri() = host_ + kUrlPrefix + "release";
+  channel_->CallMethod(nullptr, &cntl, nullptr, nullptr, nullptr);
+
+  blackbox_interconnect::TransportOutbound response2;
+  brpc::Controller cntl2;
+  SetHttpHeader(&cntl2, send_topic_);
+  cntl2.http_request().uri() = host_ + kUrlPrefix + "release";
+  channel_->CallMethod(nullptr, &cntl2, nullptr, nullptr, nullptr);
 }
 
 void ChannelBrpcBlackBox::TryReceive() {
   bb_ic::TransportOutbound response;
 
   brpc::Controller cntl;
+  std::string recv_topic_tmp = recv_topic_ + std::to_string(l_recv_topic_++);
   SetHttpHeader(&cntl, recv_topic_);
+  //SetHttpHeader(&cntl, recv_topic_tmp);
+  //std::cout << "Poptopic:" << recv_topic_ << std::endl;
+  // cntl.http_request().uri() =
+  //     host_ + kUrlPrefix + "pop?timeout=" + std::to_string(pop_timeout_s_);
   cntl.http_request().uri() =
-      host_ + kUrlPrefix + "pop?timeout=" + std::to_string(pop_timeout_s_);
+      host_ + kUrlPrefix + "pop";
+  //std::this_thread::sleep_for(std::chrono::milliseconds(500));
   channel_->CallMethod(nullptr, &cntl, nullptr, nullptr, nullptr);
 
+  /*if (cntl.Failed())
+{
+  int retry = 5;
+  while(retry > 0)
+  {
+    cntl.Reset();
+    SetHttpHeader(&cntl, recv_topic_tmp);
+    cntl.http_request().uri() = host_ + kUrlPrefix + "pop";
+    std::cout << "Pop retry times  ------>" << retry << std::endl;
+    channel_->CallMethod(nullptr, &cntl, nullptr, nullptr, nullptr);
+    if(cntl.Failed())
+    {
+      retry--;
+      std::this_thread::sleep_for(std::chrono::milliseconds( 1000 * (5 - retry)) );
+      continue;
+    }
+    else
+    {
+      break;
+    }
+  }
+}*/
   if (cntl.Failed()) {
     SPDLOG_ERROR("Rpc faliled, error_code: {}, error_info: {}",
                  cntl.ErrorCode(), cntl.ErrorText());
@@ -155,7 +196,7 @@ void ChannelBrpcBlackBox::TryReceive() {
     response.ParseFromString(cntl.response_attachment().to_string());
     if (response.code() == bb_ic::error_code::Code("ResourceNotFound") ||
         response.payload().empty()) {
-      SPDLOG_INFO("We will wait for topic: {}", recv_topic_);
+      SPDLOG_INFO("We will wait for topic: {}", recv_topic_tmp);
     } else if (response.code() != bb_ic::error_code::Code("OK")) {
       SPDLOG_ERROR("pop faliled, error_code: {}, error_info: {}",
                    response.code(), response.message());
@@ -241,19 +282,24 @@ void ChannelBrpcBlackBox::SetPeerHost(const std::string& self_id,
   auto* session_id = std::getenv(kSessionIdKey);
   YACL_ENFORCE(session_id != nullptr, "environment variable {} is not found",
                kSessionIdKey);
+  auto* ins_id = std::getenv(kInstIdKeyPrefix);
+  YACL_ENFORCE(ins_id != nullptr, "environment variable {} is not found",
+               kInstIdKeyPrefix);
 
   channel_ = std::move(brpc_channel);
   send_topic_ = self_id + peer_id;
   recv_topic_ = peer_id + self_id;
   peer_host_ = peer_id;
 
-  http_headers_[kHttpHeadProviderCode] = "SecretFlow";
+  http_headers_[kHttpHeadInstId] = ins_id;
+  http_headers_[kHttpHeadProviderCode] = "InsightOne";
   http_headers_[kHttpHeadTraceId] = trace_id;
   http_headers_[kHttpHeadToken] = token;
   http_headers_[kHttpHeadTargetNodeId] = peer_node_id;
   http_headers_[kHttpHeadSourceNodeId] = self_node_id;
   http_headers_[kHttpHeadSessionId] = session_id;
   http_headers_[kHttpHeadHost] = host_;
+  // << "ins_id:" << ins_id << " tar peer_node_id:" << peer_node_id << " souce self_node_id:" << self_node_id << std::endl;
 }
 
 void ChannelBrpcBlackBox::SetHttpHeader(brpc::Controller* controller,
@@ -268,7 +314,7 @@ void ChannelBrpcBlackBox::SetHttpHeader(brpc::Controller* controller,
 void ChannelBrpcBlackBox::TransResponse(
     const bb_ic::TransportOutbound* new_response,
     ic_pb::PushResponse* response) {
-  if (new_response->code() == bb_ic::error_code::Code("OK")) {
+  if (new_response->message() == bb_ic::error_code::Code("OK")) {
     response->mutable_header()->set_error_code(ic::ErrorCode::OK);
   } else {
     response->mutable_header()->set_error_code(ic::ErrorCode::NETWORK_ERROR);
@@ -281,7 +327,7 @@ void ChannelBrpcBlackBox::TransResponse(
 void ChannelBrpcBlackBox::DealPushDone(
     std::unique_ptr<util::BlackBoxPushDone> done) {
   done->cntl_.ignore_eovercrowded();
-
+  //std::this_thread::sleep_for(std::chrono::milliseconds(500));
   channel_->CallMethod(nullptr, &done->cntl_, nullptr, nullptr, done.get());
   static_cast<void>(done.release());
 }
@@ -294,12 +340,38 @@ void ChannelBrpcBlackBox::PushRequest(ic_pb::PushRequest& request,
   }
 
   cntl.http_request().uri() = host_ + kUrlPrefix + "push";
-
+  std::string send_topic_tmp = send_topic_ + std::to_string(l_send_topic_++);
   SetHttpHeader(&cntl, send_topic_);
+  //SetHttpHeader(&cntl, send_topic_tmp);
+  //std::cout << "Pushtopic:" << send_topic_ << std::endl;
 
   cntl.request_attachment().append(request.SerializeAsString());
 
+  //std::this_thread::sleep_for(std::chrono::milliseconds(500));
   channel_->CallMethod(nullptr, &cntl, nullptr, nullptr, nullptr);
+  //std::cout << "cntl.request_attachment():" << cntl.request_attachment() << std::endl;
+  /*if (cntl.Failed())
+{
+  int retry = 5;
+  while(retry > 0)
+  {
+    cntl.Reset();
+    SetHttpHeader(&cntl, send_topic_tmp);
+    cntl.request_attachment().append(request.SerializeAsString());
+    channel_->CallMethod(nullptr, &cntl, nullptr, nullptr, nullptr);
+    std::cout << "Push retry times  ------>" << retry << std::endl;
+    if(cntl.Failed())
+    {
+      retry--;
+      std::this_thread::sleep_for(std::chrono::milliseconds( 1000 * (5 - retry)) );
+      continue;
+    }
+    else
+    {
+      break;
+    }
+  }
+}*/
   if (cntl.Failed()) {
     SPDLOG_ERROR("send, rpc failed={}, message={}", cntl.ErrorCode(),
                  cntl.ErrorText());
@@ -311,6 +383,7 @@ void ChannelBrpcBlackBox::PushRequest(ic_pb::PushRequest& request,
   ic_pb::PushResponse response;
   TransResponse(&new_response, &response);
   if (response.header().error_code() != ic::ErrorCode::OK) {
+    std::cout << "cntl.response_attachment().to_string():" << cntl.response_attachment().to_string() << std::endl;
     YACL_THROW("send, peer failed message={}", response.header().error_msg());
   }
 }
@@ -321,11 +394,15 @@ void ChannelBrpcBlackBox::AsyncSendChunked(ic_pb::PushRequest& request,
   auto done =
       std::make_unique<util::BlackBoxPushDone>(*this, push_wait_ms_, window);
   done->cntl_.http_request().uri() = host_ + kUrlPrefix + "push";
+  //std::string send_topic_tmp = send_topic_ + std::to_string(l_send_topic_++);
+  //SetHttpHeader(&done->cntl_, send_topic_tmp);
   SetHttpHeader(&done->cntl_, send_topic_);
   done->cntl_.request_attachment().append(request.SerializeAsString());
   DealPushDone(std::move(done));
 
+  //  std::cout << "AsyncSendChunked over!!!!!!!!!!" << std::endl;
   window.Wait();
 }
 
 }  // namespace yacl::link
+
